@@ -1,0 +1,14 @@
+{
+  "PostToolUse": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 -S -E \"${DEVIN_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/scripts/collector.py\"",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}

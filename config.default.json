@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "categories": ["skill"],
+  "server": "https://172.21.48.202/v1/events"
+}
