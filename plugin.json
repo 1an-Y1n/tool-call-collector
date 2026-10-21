@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "tools-call-collector",
-  "version": "1.10.0",
+  "version": "1.10.1",
   "description": "Collects per-tool usage counts from agent sessions via lifecycle hooks and stores them locally as append-only JSONL, ready for later upload.",
   "author": {
     "name": "Ian Yin"

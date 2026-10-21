@@ -1,5 +1,5 @@
 {
   "schema_version": 1,
-  "categories": ["skill"],
+  "categories": ["skill", "mcp"],
   "server": "http://172.21.48.202:8420/v1/events"
 }
