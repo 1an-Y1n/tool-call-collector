@@ -11,6 +11,14 @@ Design rules:
 - Fail-open: any error exits 0 so the agent session is never blocked.
 - Concurrency-safe: appends under an exclusive flock.
 
+Identity fields:
+- `user`: the local account name (getpass.getuser()) — who ran the session.
+- `name` / `email`: the Devin account, read from `devin auth status` (see
+  scripts/devin_identity.py). The Devin CLI is optional: without it, or when
+  the machine is offline, both fields are null and the record is still
+  written. The lookup is cached in <data dir>/state/devin_identity.json so the
+  hook does not pay the CLI startup cost on every tool call.
+
 Data location (first match wins):
 1. $TOOL_CALL_COLLECTOR_DATA_DIR
 2. ~/.devin/tools-call-collector
@@ -59,8 +67,8 @@ except ImportError:  # non-POSIX platform: append without locking
     fcntl = None
 
 PLUGIN_NAME = "tools-call-collector"
-PLUGIN_VERSION = "1.9.0"
-SCHEMA_VERSION = 3
+PLUGIN_VERSION = "1.11.0"
+SCHEMA_VERSION = 4
 
 CATEGORIES_ENV = "TOOL_CALL_COLLECTOR_CATEGORIES"
 
@@ -196,12 +204,29 @@ def current_user():
         return os.environ.get("USER") or os.environ.get("LOGNAME")
 
 
-def base_fields(event):
+def devin_account():
+    """Devin account identity (name/email) from `devin auth status`.
+
+    Returns {"name", "email", "user_id", "source", "error"}. `error` is set
+    when the account could not be resolved (CLI missing, logged out, offline).
+    """
+    try:
+        import devin_identity  # same scripts/ directory
+
+        return devin_identity.get_identity(data_dir())
+    except Exception as exc:  # fail-open: never block the agent
+        return {"name": None, "email": None, "user_id": None,
+                "source": None, "error": f"lookup-failed ({exc})"}
+
+
+def base_fields(event, account):
     return {
         "schema_version": SCHEMA_VERSION,
         "timestamp": utc_now_iso(),
         "client_id": client_id(),
         "user": current_user(),
+        "name": account.get("name"),
+        "email": account.get("email"),
         "session_id": event.get("session_id"),
         "prompt_id": event.get("prompt_id"),
         "project_dir": os.environ.get("DEVIN_PROJECT_DIR") or os.environ.get("CLAUDE_PROJECT_DIR"),
@@ -210,9 +235,9 @@ def base_fields(event):
     }
 
 
-def build_record(event):
+def build_record(event, account):
     tool_input = event.get("tool_input")
-    record = base_fields(event)
+    record = base_fields(event, account)
     record.update({
         "type": "tool_call",
         "tool_name": event.get("tool_name"),
@@ -233,8 +258,8 @@ def skill_info(event):
     return {"skill": name, "skill_command": command}
 
 
-def build_skill_record(event, info):
-    record = base_fields(event)
+def build_skill_record(event, info, account):
+    record = base_fields(event, account)
     record.update({"type": "skill_invoke", "status": derive_status(event.get("tool_response"))})
     record.update(info)
     return record
@@ -252,6 +277,102 @@ def append_record(path, record):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+IDENTITY_REASONS = {
+    "no-devin-cli": ("Devin CLI not found",
+                     "install the Devin CLI (Linux/macOS: "
+                     "`curl -fsSL https://cli.devin.ai/install.sh | bash`; "
+                     "Windows PowerShell: "
+                     "`irm https://static.devin.ai/cli/setup.ps1 | iex`) "
+                     "and run `devin auth login`"),
+    "not-logged-in": ("not logged in to Devin", "run `devin auth login`"),
+    "no-account": ("no Devin account in `devin auth status`",
+                   "run `devin auth login`"),
+}
+
+
+def identity_error_message(reason):
+    """One-line explanation for the user.
+
+    ASCII only on purpose: the message travels through a Windows console
+    (OEM code page) as well as through the harness, and a non-ASCII
+    character would be mangled there.
+    """
+    detail, hint = IDENTITY_REASONS.get(reason, (reason or "unknown reason", ""))
+    return (f"{PLUGIN_NAME}: {detail} - this plugin cannot be used without a "
+            f"Devin account; nothing was collected or uploaded. To fix it: {hint}.")
+
+
+def identity_error_short(reason):
+    """The essential part only - this is the line the harness shows."""
+    detail = IDENTITY_REASONS.get(reason, (reason or "unknown reason", ""))[0]
+    return (f"{PLUGIN_NAME}: {detail} - this plugin cannot be used without a "
+            "Devin account; nothing was collected or uploaded.")
+
+
+def warning_marker_path():
+    return data_dir() / "state" / "identity_warning.json"
+
+
+def clear_identity_warning():
+    """Forget the "already warned" marker so a later failure warns again."""
+    try:
+        warning_marker_path().unlink()
+    except OSError:
+        pass
+
+
+def warn_missing_identity(event, account):
+    """Report the missing Devin account to the user, once per session.
+
+    Two channels, because the two harnesses surface things differently:
+
+    - stdout JSON: `systemMessage` is shown to the user as a warning in Claude
+      Code; `hookSpecificOutput.additionalContext` puts the same sentence in
+      the agent's context in both harnesses (the agent can then mention it).
+    - stderr: the plain one-line message, for logs and for harnesses that
+      surface hook stderr.
+
+    The hook still exits 0: the hook command is an interpreter-fallback chain
+    (`python3 ... || python ...`), and a non-zero exit would make the shell
+    try every remaining branch — re-running the collector several times per
+    tool call. Exit 0 stops the chain at the first working interpreter.
+    """
+    reason = account.get("error") or "lookup-failed"
+    session_id = event.get("session_id")
+    marker = warning_marker_path()
+    seen = None
+    try:
+        seen = json.loads(marker.read_text(encoding="utf-8")).get("session_id")
+    except (OSError, ValueError):
+        seen = None
+    if session_id is not None and seen == session_id:
+        return  # already reported for this session
+    message = identity_error_message(reason)
+    payload = {
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": message,
+        },
+    }
+    try:
+        # stderr carries the short form: the first line is what Claude Code
+        # puts into its hook-error notice.
+        print(identity_error_short(reason), file=sys.stderr)
+        print(json.dumps(payload, ensure_ascii=False), flush=True)
+    except Exception:
+        # Cannot talk to the user -> stay silent and let the caller exit.
+        return
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp = marker.with_name(f"{marker.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"session_id": session_id, "warned_at": utc_now_iso()}),
+                       encoding="utf-8")
+        os.replace(tmp, marker)
+    except OSError:
+        pass
+
+
 def main():
     try:
         raw = sys.stdin.read()
@@ -264,6 +385,13 @@ def main():
         categories, _source = resolve_categories()
         if not categories:
             return 0  # collection disabled: no files are created
+        account = devin_account()
+        if not account.get("email"):
+            # No Devin account -> the record cannot be attributed to a person.
+            # Do not write and do not upload; tell the user instead.
+            warn_missing_identity(event, account)
+            return 0
+        clear_identity_warning()  # the account is back: warn again if it breaks
         category = categorize(tool_name)
         events_dir = data_dir() / "events"
         wrote = False
@@ -272,13 +400,13 @@ def main():
                 info = skill_info(event)
                 if info["skill_command"] == "invoke" or info["skill"]:
                     # real invocation only; list/search browsing is not recorded
-                    append_record(events_dir / "skill-calls.jsonl", build_skill_record(event, info))
+                    append_record(events_dir / "skill-calls.jsonl", build_skill_record(event, info, account))
                     wrote = True
             else:
-                append_record(events_dir / f"{category}-calls.jsonl", build_record(event))
+                append_record(events_dir / f"{category}-calls.jsonl", build_record(event, account))
                 wrote = True
         elif "all" in categories:
-            append_record(events_dir / "tool-calls.jsonl", build_record(event))
+            append_record(events_dir / "tool-calls.jsonl", build_record(event, account))
             wrote = True
         if wrote:
             send_pending()

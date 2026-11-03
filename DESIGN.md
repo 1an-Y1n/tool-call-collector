@@ -183,11 +183,12 @@ skill 名是标识符而非内容，记录它不违反"仅元数据"约束。
 选 `~/.devin/` 的原因：用户级全局目录，跨项目汇总，不污染代码仓库；
 按插件名建子目录避免与其他工具混淆。
 
-### 3.2 记录格式（schema_version: 3）
+### 3.2 记录格式（schema_version: 4）
 
 JSONL（NDJSON）：**一行一条自包含 JSON 记录**。公共字段：
 `schema_version`、`timestamp`（UTC ISO 8601 微秒）、`client_id`、`user`、
-`session_id`、`prompt_id`、`project_dir`、`host`、`collector{name,version}`。
+`name`、`email`、`session_id`、`prompt_id`、`project_dir`、`host`、
+`collector{name,version}`。
 
 `client_id` 是**安装级稳定标识**：首次运行时生成一次 UUID，持久化在
 `<数据目录>/state/client_id`，此后所有记录携带。N 个 client 向同一服务器上传时，
@@ -196,6 +197,46 @@ JSONL（NDJSON）：**一行一条自包含 JSON 记录**。公共字段：
 
 `user` 是会话所属的 **Linux 账号名**（`getpass.getuser()`，取不到时为 null），
 便于服务端按使用者聚合；它是描述性字段而非可靠主键（可改名、可撞名）。
+
+`name` 与 `email` 是 **Devin 账号身份**，来自 `devin auth status` 的账号段
+（`Name:` / `Email:`）。
+
+**Devin 账号是必需的**：拿不到账号就无法把记录归属到具体的人，因此
+**不写记录、不上传**，改为向用户报错（stderr 短句 + stdout JSON
+`systemMessage` / `hookSpecificOutput.additionalContext`，后者带完整修复指引），
+**每个会话提示一次**（`<数据目录>/state/identity_warning.json` 记住 session id；
+账号恢复后清除标记，再次掉线会再提示一次）。提示通道都失败时（例如 stdout
+被关闭）就安静退出。此时 hook **返回 0**：hook 命令是解释器回退链
+（`python3 … || python …`），返回非 0 会让 shell 把剩余分支全跑一遍，
+等于每次工具调用重复运行 collector。
+
+**支持范围**：Linux / macOS / Windows 上**安装并登录了 Devin CLI**。
+Devin Desktop 不在范围内（它自带的 CLI 不在 `PATH` 上，采集器找不到）。
+
+两种提示分别对应两种原因：
+
+| 原因 | 提示 | 修复方式 |
+|------|------|----------|
+| `no-devin-cli` | `Devin CLI not found` | 安装 CLI（Linux/macOS `curl -fsSL https://cli.devin.ai/install.sh \| bash`；Windows PowerShell `irm https://static.devin.ai/cli/setup.ps1 \| iex`）并 `devin auth login` |
+| `not-logged-in` | `not logged in to Devin` | `devin auth login` |
+
+设计取舍：
+
+- **账号来源唯一**：`devin auth status`。CLI 的凭证文件里没有身份信息
+  （session token 的 JWT 只含 `session_id`），所以没有离线路径；
+- **带缓存**：CLI 单次响应约 0.9 s，而 hook 每次工具调用都触发，因此结果缓存
+  在 `<数据目录>/state/devin_identity.json`，默认 6 小时才刷新一次；
+- **失败短暂缓存**：查不到身份时只缓存 60 秒，既避免断网期间每次工具调用都去
+  拉一次 CLI，又能让刚完成的 `devin auth login` 很快生效；
+- **不依赖退出码**：`devin auth status` 可能打印了账号信息却返回非 0（stderr
+  有告警、team settings 查询部分失败），因此身份以**解析出的内容**为准，
+  不以进程退出码为准；
+- **跨平台**：Windows 上同一套 Rust 二进制同样支持 `devin auth status`
+  （仅 *sandbox* 需要 WSL，本插件不用）；可执行文件查找顺序为
+  `TOOL_CALL_COLLECTOR_DEVIN_BIN` → `PATH` → 各平台已知安装目录
+  （Windows `%LOCALAPPDATA%\devin\cli\bin\devin.exe`，
+  Linux/macOS `~/.local/bin/devin`）。`shutil.which` 能识别 `devin.cmd`
+  之类的包装器（`.cmd` 经 `cmd /c` 执行）。
 
 `tool_call` 记录独有字段：`tool_name`、`status`（success/error/unknown）、
 `input_keys`（参数键名数组）。
@@ -206,8 +247,8 @@ JSONL（NDJSON）：**一行一条自包含 JSON 记录**。公共字段：
 示例：
 
 ```json
-{"schema_version":3,"type":"tool_call","timestamp":"2026-10-14T07:59:35.309678Z","client_id":"2d1dcb0d-…","user":"ian_yin","session_id":"superb-quality","prompt_id":"c8222e07-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"edit","status":"success","input_keys":["file_path","new_string","old_string"],"collector":{"name":"tools-call-collector","version":"1.9.0"}}
-{"schema_version":3,"type":"skill_invoke","timestamp":"2026-10-14T08:08:07.585190Z","client_id":"2d1dcb0d-…","user":"ian_yin","session_id":"superb-quality","prompt_id":"8aa1ce27-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"devin-cli","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.9.0"}}
+{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:59:35.309678Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"c8222e07-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"edit","status":"success","input_keys":["file_path","new_string","old_string"],"collector":{"name":"tools-call-collector","version":"1.11.0"}}
+{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T08:08:07.585190Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"8aa1ce27-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"devin-cli","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.11.0"}}
 ```
 
 ### 3.3 为什么选 JSONL（面向上传的设计）

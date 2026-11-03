@@ -208,11 +208,12 @@ Why `~/.devin/`: a user-level global directory that aggregates across projects w
 polluting any code repository; the plugin-name subdirectory avoids clashing with other
 tools.
 
-### 3.2 Record format (schema_version: 3)
+### 3.2 Record format (schema_version: 4)
 
 JSONL (NDJSON): **one self-contained JSON record per line**. Common fields:
 `schema_version`, `timestamp` (UTC ISO 8601, microsecond precision), `client_id`,
-`user`, `session_id`, `prompt_id`, `project_dir`, `host`, `collector{name,version}`.
+`user`, `name`, `email`, `session_id`, `prompt_id`, `project_dir`, `host`,
+`collector{name,version}`.
 
 `client_id` is a **stable per-installation identifier**: a UUID generated once on
 first run and persisted in `<data dir>/state/client_id`; every record carries it
@@ -225,6 +226,56 @@ and session names repeat across machines, so neither is a reliable key);
 when unavailable), handy for per-user aggregation server-side; it is descriptive
 metadata, not a reliable key (renameable, collision-prone).
 
+`name` and `email` are the **Devin account identity**, read from the account block
+of `devin auth status` (`Name:` / `Email:`).
+
+**The Devin account is required.** Without it the collector cannot attribute a
+record to a person, so it **writes nothing and uploads nothing** and reports the
+problem to the user instead (a short stderr line plus a stdout JSON with
+`systemMessage` and `hookSpecificOutput.additionalContext`, the latter carrying
+the full fix instructions), **once per session**
+(`<data dir>/state/identity_warning.json` remembers the session id; the marker
+is cleared as soon as the account resolves, so a later logout warns again). If
+neither channel works (e.g. stdout is closed), the collector just exits
+silently — still without collecting anything. The hook **exits 0** in this
+state: the hook command is an interpreter-fallback chain
+(`python3 … || python …`), and a non-zero exit would make the shell try every
+remaining branch — re-running the collector several times per tool call.
+
+**Supported setup: the Devin CLI on Linux, macOS or Windows, signed in to
+Devin.** Devin Desktop is out of scope — it bundles a CLI of its own that is
+not on the `PATH`, so the collector does not find it.
+
+Two distinct messages, one per cause:
+
+| Cause | Message | Fix |
+| ----- | ------- | --- |
+| `no-devin-cli` | `Devin CLI not found` | install the CLI (Linux/macOS `curl -fsSL https://cli.devin.ai/install.sh \| bash`; Windows PowerShell `irm https://static.devin.ai/cli/setup.ps1 \| iex`) and run `devin auth login` |
+| `not-logged-in` | `not logged in to Devin` | run `devin auth login` |
+
+Design trade-offs:
+
+- **Single source**: `devin auth status`. The CLI's credential file holds no
+  identity (the session token's JWT carries only a `session_id`), so there is no
+  offline path;
+- **Cached**: the CLI answers in ~0.9 s and the hook fires on *every* tool call,
+  so the result is cached in `<data dir>/state/devin_identity.json` and refreshed
+  only when it goes stale (6 h by default);
+- **Failures cached briefly**: an unresolved identity is remembered for only
+  60 s, so an outage does not cost one CLI call per tool call, yet a fresh
+  `devin auth login` takes effect quickly;
+- **The exit code does not decide**: `devin auth status` can print the account
+  block and still exit non-zero (a warning on stderr, a partially failed team
+  lookup), so the identity is taken from the parsed output, never from the
+  process status;
+- **Cross-platform**: native Windows runs the same Rust binary and supports
+  `devin auth status` as well (only the *sandbox* needs WSL, which this collector
+  does not use); the executable is looked up as
+  `TOOL_CALL_COLLECTOR_DEVIN_BIN` → `PATH` → known install directories
+  (Windows `%LOCALAPPDATA%\devin\cli\bin\devin.exe`,
+  Linux/macOS `~/.local/bin/devin`). `shutil.which` also finds a `devin.cmd`
+  wrapper, which is then run through `cmd /c`.
+
 `tool_call`-only fields: `tool_name`, `status` (success/error/unknown), `input_keys`
 (array of input key names).
 
@@ -234,8 +285,8 @@ etc.), `status`.
 Examples:
 
 ```json
-{"schema_version":3,"type":"tool_call","timestamp":"2026-10-14T07:59:35.309678Z","client_id":"2d1dcb0d-…","user":"ian_yin","session_id":"superb-quality","prompt_id":"c8222e07-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"edit","status":"success","input_keys":["file_path","new_string","old_string"],"collector":{"name":"tools-call-collector","version":"1.9.0"}}
-{"schema_version":3,"type":"skill_invoke","timestamp":"2026-10-14T08:08:07.585190Z","client_id":"2d1dcb0d-…","user":"ian_yin","session_id":"superb-quality","prompt_id":"8aa1ce27-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"devin-cli","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.9.0"}}
+{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:59:35.309678Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"c8222e07-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"edit","status":"success","input_keys":["file_path","new_string","old_string"],"collector":{"name":"tools-call-collector","version":"1.11.0"}}
+{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T08:08:07.585190Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"8aa1ce27-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"devin-cli","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.11.0"}}
 ```
 
 ### 3.3 Why JSONL (upload-oriented design)

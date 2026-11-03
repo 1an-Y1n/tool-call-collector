@@ -43,6 +43,7 @@ tools-call-collector/
 ├── config.default.json              # factory-default category config (shipped with the plugin)
 ├── scripts/
 │   ├── collector.py                 # PostToolUse collector (stdlib only)
+│   ├── devin_identity.py            # Devin account identity via `devin auth status` (stdlib only)
 │   ├── uploader.py                  # background NDJSON uploader (stdlib only)
 │   └── stats.py                     # local aggregation (read-only)
 ├── LICENSE
@@ -136,22 +137,25 @@ First match wins:
 │   ├── shell-calls.jsonl         # generated only when "shell" is configured: … one file per category
 │   └── …                         # <category>-calls.jsonl, generated per config
 └── state/                        # upload cursors (cursors.json) + upload.lock
+                                  # + client_id + cached Devin identity (devin_identity.json)
 ```
 
 Event files are **generated dynamically from the config**: unconfigured categories have
 no file, and with an empty config the `events/` directory itself is never created.
 
-### Record schema (`schema_version: 3`)
+### Record schema (`schema_version: 4`)
 
 One self-contained JSON object per line (NDJSON), with fields:
 
 | Field              | Type           | Description                                                                                                                 |
 | ------------------ | -------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `schema_version` | int            | Record format version, currently `3`; bump it when fields evolve                                                          |
+| `schema_version` | int            | Record format version, currently `4`; bump it when fields evolve                                                          |
 | `type`           | string         | Event type, currently `"tool_call"`                                                                                       |
 | `timestamp`      | string         | UTC ISO 8601, microsecond precision, `Z` suffix                                                                           |
 | `client_id`      | string \| null | Stable per-installation ID (UUID, generated once in the data dir) — distinguishes different machines/clients on the server |
 | `user`           | string \| null | Linux account name of the session owner (`getpass.getuser()`)                                                             |
+| `name`           | string \| null | Devin account display name (e.g. `Ian Yin`), from `devin auth status`                                                      |
+| `email`          | string \| null | Devin account email (e.g. `ian_yin@example.com`), from `devin auth status`                                                 |
 | `session_id`     | string \| null | Session ID (shared by all hook events within a session)                                                                     |
 | `prompt_id`      | string \| null | Turn ID (rotated on every user prompt)                                                                                      |
 | `project_dir`    | string \| null | Project root of the session that triggered the call                                                                         |
@@ -159,13 +163,94 @@ One self-contained JSON object per line (NDJSON), with fields:
 | `tool_name`      | string         | Tool name, e.g. `exec`, `edit`, `mcp__github__create_issue`                                                           |
 | `status`         | string         | `success` / `error` / `unknown`                                                                                       |
 | `input_keys`     | string[]       | Field names of `tool_input` (key names only, never values)                                                                |
-| `collector`      | object         | `{ "name": "tools-call-collector", "version": "1.6.0" }`                                                                  |
+| `collector`      | object         | `{ "name": "tools-call-collector", "version": "1.11.0" }`                                                                 |
 
 Example (one line):
 
 ```json
-{"schema_version":3,"type":"tool_call","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"exec","status":"success","input_keys":["command","timeout"],"collector":{"name":"tools-call-collector","version":"1.6.0"}}
+{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"exec","status":"success","input_keys":["command","timeout"],"collector":{"name":"tools-call-collector","version":"1.11.0"}}
 ```
+
+### Devin identity (`name` / `email`)
+
+`name` and `email` come from the Devin CLI: the collector runs
+`devin auth status` and reads the account block of its output.
+
+**Supported setup: the Devin CLI on Linux, macOS or Windows, signed in to
+Devin.** (Devin Desktop is out of scope — it bundles a CLI of its own that is
+not on the `PATH`, so the collector does not find it.)
+
+**The Devin account is required.** Without it the collector cannot attribute a
+record to a person, so it **writes nothing and uploads nothing** and tells the
+user instead. Two distinct messages:
+
+```
+tools-call-collector: Devin CLI not found - this plugin cannot be used without a
+Devin account; nothing was collected or uploaded.
+```
+```
+tools-call-collector: not logged in to Devin - this plugin cannot be used without a
+Devin account; nothing was collected or uploaded.
+```
+
+The message goes out on two channels:
+
+| Channel | Where it shows up |
+| ------- | ----------------- |
+| stderr | the harness's hook log / console — the **short** form, because that is the first line Claude Code puts into its hook-error notice |
+| stdout JSON | `systemMessage` → a warning shown to the user in Claude Code; `hookSpecificOutput.additionalContext` → the same sentence in the agent's context in both harnesses. Carries the **full** text, including how to fix it: the install command for Linux/macOS and Windows, or `devin auth login` |
+
+If neither channel works (e.g. stdout is closed), the collector simply exits —
+silently, and still without collecting anything.
+
+The report happens **once per session** (`<data dir>/state/identity_warning.json`
+remembers the session id), and the marker is cleared as soon as the account is
+resolved again, so a later logout warns once more. The hook exits 0 in this
+state: the hook command is an interpreter-fallback chain
+(`python3 … || python …`), and a non-zero exit would make the shell try every
+remaining branch — re-running the collector several times per tool call.
+
+Details of the lookup:
+
+- **Cached.** The CLI needs ~0.9 s to answer and the hook fires on *every*
+  tool call, so the result is cached in `<data dir>/state/devin_identity.json`
+  and refreshed only when it goes stale (6 h by default). A *failed* lookup is
+  cached for only 60 s, so a fresh `devin auth login` is picked up quickly
+  without costing a CLI call per tool call during an outage.
+- **The exit code does not decide.** `devin auth status` can print the account
+  block *and* exit non-zero (a warning on stderr, a partially failed team
+  lookup). The identity is therefore taken from the parsed output, never from
+  the process status.
+- **No offline path.** The account is resolved by the server
+  (`server.codeium.com`); the CLI stores no local copy of it (its credential
+  file holds a session token whose payload carries only a session id). Offline,
+  the CLI prints `User / team info: Failed to fetch from server` and no
+  account — so an offline machine collects nothing.
+
+| Environment variable | Default | Meaning |
+| -------------------- | ------- | ------- |
+| `TOOL_CALL_COLLECTOR_DEVIN_BIN` | (auto-detected) | Path to the `devin` executable. Set it to `off` / `none` / `disabled` (or to an empty string on POSIX shells) to disable the lookup — the collector then behaves as if no account were available |
+| `TOOL_CALL_COLLECTOR_IDENTITY_TTL` | `6h` | How long a cached identity stays valid (`6h`, `30m`, or plain seconds) |
+
+> On Windows, `set VAR=` *deletes* the variable instead of setting it empty, so
+> the explicit word `off` is the reliable way to disable the lookup there.
+
+Where the executable is looked for, in order:
+
+1. `TOOL_CALL_COLLECTOR_DEVIN_BIN` (or `devin` on the `PATH`)
+2. Windows: `%LOCALAPPDATA%\devin\cli\bin\devin.exe`,
+   `%LOCALAPPDATA%\devin\bin\devin.exe`, `%APPDATA%\devin\bin\devin.exe`,
+   `%USERPROFILE%\.devin\bin\devin.exe`
+3. macOS/Linux: `~/.local/bin/devin`,
+   `~/.local/share/devin/cli/_versions/<version>/bin/devin`,
+   `~/.devin/bin/devin`, `/usr/local/bin/devin`, `/usr/bin/devin`
+
+`shutil.which` is used for the `PATH` lookup, so a `devin.cmd` / `devin.bat`
+wrapper is found as well (a `.cmd` is executed through `cmd /c`).
+
+`devin auth status` is available on native Windows as well (same CLI, same
+subcommand); only the *sandbox* is WSL-only, which this collector does not
+use.
 
 ### Skill invocation records (`events/skill-calls.jsonl`, `type: "skill_invoke"`)
 
@@ -177,7 +262,7 @@ metadata-only constraint):
 
 | Field             | Type           | Description                                                                                                                                |
 | ----------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| (common fields)   | —             | Same as above: `schema_version`/`timestamp`/`client_id`/`user`/`session_id`/`prompt_id`/`project_dir`/`host`/`collector` |
+| (common fields)   | —             | Same as above: `schema_version`/`timestamp`/`client_id`/`user`/`name`/`email`/`session_id`/`prompt_id`/`project_dir`/`host`/`collector` |
 | `type`          | string         | Always `"skill_invoke"`                                                                                                                  |
 | `status`        | string         | `success` / `error` / `unknown`                                                                                                      |
 | `skill`         | string \| null | The invoked skill name (e.g. `tools-call-collector:tool-call-stats`); null only when an invocation carries no identifiable name          |
@@ -189,7 +274,7 @@ invocation with no identifiable name shows up as `<unidentified>`.
 Example (one line):
 
 ```json
-{"schema_version":3,"type":"skill_invoke","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"tools-call-collector:tool-call-stats","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.9.0"}}
+{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"tools-call-collector:tool-call-stats","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.11.0"}}
 ```
 
 ### Why JSONL (upload-oriented design)
@@ -284,6 +369,82 @@ python3 <plugin dir>/scripts/stats.py --by day     # per-day breakdown
 python3 <plugin dir>/scripts/stats.py --json       # machine-readable output
 python3 <plugin dir>/scripts/stats.py --info       # current config + size/line count of each event file
 ```
+
+## Platform support (Linux / macOS / Windows)
+
+The collector is pure-stdlib Python 3 and runs on all three platforms. What differs
+between them is **how the hook command is executed** and **what the Python interpreter
+is called**.
+
+### The hook command
+
+`hooks.json` runs one shell command per tool call. It is written as a chain of
+alternatives so that it works in every shell the two harnesses use:
+
+```
+python3 -S -E "${CLAUDE_PLUGIN_ROOT}/scripts/collector.py" || python -S -E "%CLAUDE_PLUGIN_ROOT%/scripts/collector.py" || …
+```
+
+The chain is ordered by **which shell is most likely to run it** *and* by
+**what a failed branch costs**:
+
+| Shell | Winning branch | Cost of the branches before it |
+| ----- | -------------- | ------------------------------ |
+| `sh -c` (Devin CLI and Claude Code on Linux/macOS) | `${CLAUDE_PLUGIN_ROOT}` + `python3` | none — first branch |
+| Git Bash (Claude Code on Windows with Git for Windows) | `${CLAUDE_PLUGIN_ROOT}` + `python3` | none — first branch |
+| `cmd.exe`, harness **substitutes** the path textually | `${CLAUDE_PLUGIN_ROOT}` + `python3` | none — first branch |
+| `cmd.exe`, harness **exports** the variable | `%CLAUDE_PLUGIN_ROOT%` + `python` | one wasted interpreter start |
+| `cmd.exe`, only `PLUGIN_ROOT` exported | `%PLUGIN_ROOT%` + `python` | up to three wasted starts |
+
+Three details make this work:
+
+- **Interpreter name.** `python3` is the Linux/macOS name; the Windows python.org
+  installer provides `python.exe` and the `py` launcher, but **not** `python3.exe`.
+  Both spellings are tried.
+- **Path syntax.** POSIX shells expand `${VAR}`; `cmd.exe` expands `%VAR%` — and
+  *only* `%VAR%` (a `${VAR}` in `cmd.exe` stays literal text, verified). The
+  plugin root is therefore referenced through several spellings: `${CLAUDE_PLUGIN_ROOT}`,
+  `%CLAUDE_PLUGIN_ROOT%`, `${PLUGIN_ROOT}`, `%PLUGIN_ROOT%`. Both harnesses know
+  `CLAUDE_PLUGIN_ROOT` and `PLUGIN_ROOT`; the Devin CLI has **no** `DEVIN_PLUGIN_ROOT`
+  (its binary only mentions `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`,
+  `PLUGIN_DATA`), so a `${DEVIN_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}` branch is kept
+  last, purely for compatibility with anything that does set it.
+- **Failure cost.** "command not found" is a shell-level error and nearly free;
+  "can't open file" requires starting the interpreter first. The branch order
+  therefore puts the *likely* interpreter first, so a wrong guess costs a cheap
+  shell error rather than a full interpreter start.
+
+Measured on a Windows 11 host (`cmd.exe`, Python 3.13 at `C:\Python313`):
+
+| Scenario | Time |
+| -------- | ---- |
+| collector, identity cached | 0.27 s |
+| collector, cold (identity lookup + upload attempt) | 2.4 s — the upload to an unreachable server, not the identity lookup; the circuit breaker suppresses it for the next 60 s |
+
+### Known limitation: PowerShell 5.1
+
+Claude Code runs shell-form hooks in **PowerShell** on Windows when Git for Windows
+is *not* installed. Windows PowerShell 5.1 cannot parse `||` (`ParserError:
+InvalidEndOfLine`, verified), so the chain above fails to parse there and no data
+is collected (the session itself is unaffected — the hook simply errors out).
+
+Fixes, in order of preference:
+
+1. **Install Git for Windows** — the hook then runs in Git Bash and the first
+   branch works. Note that Claude Code looks for Git Bash in the standard
+   locations; if Git is installed elsewhere (e.g. `C:\Git`), point
+   `CLAUDE_CODE_GIT_BASH_PATH` at `bash.exe`.
+2. Use PowerShell 7+ (`pwsh`), which supports `||`.
+3. Override the hook in your own settings with a PowerShell-compatible command.
+
+### Python on Windows
+
+Python 3.9+ must be on `PATH` as `python` (or `python3`). The collector itself is
+stdlib-only, so any Python 3 works; `python -S -E` skips `site` initialisation and
+`PYTHON*` environment processing.
+
+The Devin CLI itself is optional for collection — without it the record is still
+written, with `name` and `email` set to `null`.
 
 ## Performance
 
