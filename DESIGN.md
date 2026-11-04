@@ -247,8 +247,8 @@ Devin Desktop 不在范围内（它自带的 CLI 不在 `PATH` 上，采集器�
 示例：
 
 ```json
-{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:59:35.309678Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"c8222e07-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"edit","status":"success","input_keys":["file_path","new_string","old_string"],"collector":{"name":"tools-call-collector","version":"1.11.0"}}
-{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T08:08:07.585190Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"8aa1ce27-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"devin-cli","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.11.0"}}
+{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:59:35.309678Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"c8222e07-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"edit","status":"success","input_keys":["file_path","new_string","old_string"],"collector":{"name":"tools-call-collector","version":"1.11.1"}}
+{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T08:08:07.585190Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"8aa1ce27-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"devin-cli","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.11.1"}}
 ```
 
 ### 3.3 为什么选 JSONL（面向上传的设计）
@@ -357,7 +357,11 @@ devin plugins install --local <源目录>
 - `--local` 安装通过**硬链接**缓存内容，修改源文件即时反映到 cache
   （hook 实际以 cache 路径作为 `DEVIN_PLUGIN_ROOT` 执行）；
 - 实测生效时机：会话中途安装的插件，从**下一个用户轮次**开始生效
-  （会话启动时插件尚不存在则该轮次不生效）。
+  （会话启动时插件尚不存在则该轮次不生效）；
+- 格式本身**没有安装期钩子**（Agent Plugins 只定义 skills 与 MCP 两种组件），
+  所以安装过程无法校验 Devin CLI 与登录状态，也无法在安装时执行任何命令。
+  这一前提只能在安装前由用户满足（见 README「Requirements」），运行期由采集器
+  检测、降级为不写不上传，并给出修复命令。
 
 ### 6.3 已验证事项
 

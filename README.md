@@ -1,10 +1,6 @@
-
-# tool-call-collector
+# tools-call-collector
 
 Collect devin tool calling.
-===========================
-
-# tools-call-collector
 
 A plugin conforming to the [Agent Plugins Specification 1.0.0](https://github.com/agentplugins/agent-plugins-spec):
 it collects how often the agent uses each tool via lifecycle hooks, stores the data
@@ -50,15 +46,60 @@ tools-call-collector/
 └── README.md
 ```
 
+## Requirements
+
+The plugin runs inside the Devin CLI and takes the person from that CLI's
+signed-in account, so all of this must hold **both when you install it and
+later, in the shell that runs the hooks**:
+
+| Requirement | Why it is needed | Check |
+| --- | --- | --- |
+| **Devin CLI** on `PATH` | it installs and updates the plugin itself (`devin plugins install`) **and** attributes every event to a person via `devin auth status` | `devin --version` |
+| **Signed in to Devin** | the account supplies `name` / `email`; with no account the collector writes nothing | `devin auth status` → a `User:` block containing an `Email:` line |
+| **Python 3.9+** as `python` or `python3` | the hook starts the collector as a subprocess on every tool call | `python3 --version` |
+
+No `pip install`, no system packages, no build step.
+
+### The CLI is checked at runtime, not at install time
+
+The Agent Plugins format has **no install-time hook**: a plugin cannot run a
+command when it is installed — [spec §7](https://github.com/agentplugins/agent-plugins-spec)
+defines exactly two component types, skills and MCP servers, and everything
+else is out of the portable format. So the CLI and the login **cannot** be
+verified during installation, and these situations still leave the plugin
+without an account afterwards:
+
+- the CLI was removed, or replaced by another installation (`PATH` changed)
+- the shell that runs the hook sees a different `PATH` than the login shell
+- **Devin Desktop** bundles its own CLI that is not on `PATH` — explicitly out
+  of scope, the collector will not find it
+- the CLI is present but logged out, or the account is no longer valid
+
+In every one of those cases the collector **fails open**: it writes nothing,
+uploads nothing, and prints one warning per session so the user can fix it —
+`Devin CLI not found` (carrying the install command for Linux/macOS and
+Windows) or `not logged in to Devin`. Full text and both output channels:
+[Devin identity](#devin-identity-name--email).
+
 ## Installation
 
 ```bash
-# Local development (linked to this folder; edits take effect immediately)
+# 0. Prerequisites — see Requirements above
+devin --version
+devin auth status          # must show the User: block with an Email: line
+python3 --version
+
+# 1. Install (Local development links this folder; edits take effect immediately)
 devin plugins install --local ./tools-call-collector
 
-# Verify
+# 2. Verify the plugin is registered
 devin plugins list
 devin plugins info tools-call-collector
+
+# 3. Verify attribution, after one tool call in a session: the cached identity
+#    must carry an email, otherwise no event can be attributed to a person
+cat ~/.devin/tools-call-collector/state/devin_identity.json
+#    (Windows: %USERPROFILE%\.devin\tools-call-collector\state\devin_identity.json)
 ```
 
 ## Configuration
@@ -163,12 +204,12 @@ One self-contained JSON object per line (NDJSON), with fields:
 | `tool_name`      | string         | Tool name, e.g. `exec`, `edit`, `mcp__github__create_issue`                                                           |
 | `status`         | string         | `success` / `error` / `unknown`                                                                                       |
 | `input_keys`     | string[]       | Field names of `tool_input` (key names only, never values)                                                                |
-| `collector`      | object         | `{ "name": "tools-call-collector", "version": "1.11.0" }`                                                                 |
+| `collector`      | object         | `{ "name": "tools-call-collector", "version": "1.11.1" }`                                                                 |
 
 Example (one line):
 
 ```json
-{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"exec","status":"success","input_keys":["command","timeout"],"collector":{"name":"tools-call-collector","version":"1.11.0"}}
+{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"exec","status":"success","input_keys":["command","timeout"],"collector":{"name":"tools-call-collector","version":"1.11.1"}}
 ```
 
 ### Devin identity (`name` / `email`)
@@ -274,7 +315,7 @@ invocation with no identifiable name shows up as `<unidentified>`.
 Example (one line):
 
 ```json
-{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"tools-call-collector:tool-call-stats","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.11.0"}}
+{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"tools-call-collector:tool-call-stats","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.11.1"}}
 ```
 
 ### Why JSONL (upload-oriented design)
@@ -486,6 +527,10 @@ Analysis:
   plugin hook convention (`hooks.json` at the plugin root); the hook process locates
   bundled scripts through `DEVIN_PLUGIN_ROOT` and follows Devin's plugin-hook
   "fail-open" semantics.
+- The format has **no install-time hook**, so the Devin CLI and the Devin login
+  cannot be verified while installing; both are requirements the user must meet (see
+  [Requirements](#requirements)). The collector detects either one at runtime, writes
+  nothing without an account, and reports how to fix it.
 - The data directory does not use the spec's `PLUGIN_DATA` (per §9.1 that variable is
   only guaranteed for stdio MCP subprocesses, not hook processes); an equivalent
   user-level persistent directory plus an environment-variable override is used
@@ -498,10 +543,3 @@ values, output, and error text are never recorded. If finer-grained data is need
 the future, prefer enabling it on the server/upload side rather than widening what is
 persisted at the collector.
 
->>>>>>> 989fc49 (Tool call collecor v1.0)
->>>>>>>
->>>>>>
->>>>>
->>>>
->>>
->>

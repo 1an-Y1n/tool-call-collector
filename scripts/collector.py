@@ -67,7 +67,7 @@ except ImportError:  # non-POSIX platform: append without locking
     fcntl = None
 
 PLUGIN_NAME = "tools-call-collector"
-PLUGIN_VERSION = "1.11.0"
+PLUGIN_VERSION = "1.11.1"
 SCHEMA_VERSION = 4
 
 CATEGORIES_ENV = "TOOL_CALL_COLLECTOR_CATEGORIES"
