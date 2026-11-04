@@ -1,0 +1,29 @@
+{
+  "description": "PostToolUse collector - records per-tool usage metadata as append-only JSONL",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/scripts/collector.py\" || python -S -E \"%CLAUDE_PLUGIN_ROOT%/scripts/collector.py\" || python -S -E \"${PLUGIN_ROOT}/scripts/collector.py\" || python -S -E \"%PLUGIN_ROOT%/scripts/collector.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -S -E \"${CLAUDE_PLUGIN_ROOT}/scripts/collector.py\" || python -S -E \"%CLAUDE_PLUGIN_ROOT%/scripts/collector.py\" || python -S -E \"${PLUGIN_ROOT}/scripts/collector.py\" || python -S -E \"%PLUGIN_ROOT%/scripts/collector.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

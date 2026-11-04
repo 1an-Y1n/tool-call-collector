@@ -67,7 +67,7 @@ except ImportError:  # non-POSIX platform: append without locking
     fcntl = None
 
 PLUGIN_NAME = "tools-call-collector"
-PLUGIN_VERSION = "1.11.1"
+PLUGIN_VERSION = "1.12.0"
 SCHEMA_VERSION = 4
 
 CATEGORIES_ENV = "TOOL_CALL_COLLECTOR_CATEGORIES"
@@ -79,14 +79,23 @@ def _prefix(p):
 
 # All writable categories, in match order (first match wins; "other" must stay last).
 # A category maps either to a set of exact tool names or to a prefix matcher.
+#
+# Tool names differ per harness and the match is case sensitive, so every set
+# carries both spellings:
+#   - Devin CLI: lowercase names ("exec", "read", "todo_write", ...)
+#   - Claude Code: capitalised names ("Bash", "Read", "TodoWrite", ...)
+# Without the Claude Code spellings every Claude Code tool call would land in
+# "other", and the "skill" category would never fire there.
 CATEGORY_MATCHERS = {
-    "file": {"read", "write", "edit", "apply_patch", "notebook_read", "notebook_edit"},
-    "search": {"grep", "glob"},
-    "shell": {"exec", "get_output", "write_to_process", "kill_shell"},
-    "web": {"webfetch"},
-    "planning": {"todo_write", "exit_plan_mode"},
-    "skill": {"skill"},
-    "subagent": {"run_subagent", "read_subagent"},
+    "file": {"read", "write", "edit", "apply_patch", "notebook_read", "notebook_edit",
+             "Read", "Write", "Edit", "MultiEdit", "NotebookEdit"},
+    "search": {"grep", "glob", "Grep", "Glob"},
+    "shell": {"exec", "get_output", "write_to_process", "kill_shell",
+              "Bash", "BashOutput", "KillShell", "KillBash"},
+    "web": {"webfetch", "WebFetch", "WebSearch"},
+    "planning": {"todo_write", "exit_plan_mode", "TodoWrite", "ExitPlanMode"},
+    "skill": {"skill", "Skill"},
+    "subagent": {"run_subagent", "read_subagent", "Task"},
     "permission": {"request_scope"},
     "mcp-management": {"mcp_list_servers", "mcp_list_tools", "mcp_call_tool", "mcp_read_resource"},
     "mcp": _prefix("mcp__"),      # MCP server tools: mcp__<server>__<tool>
@@ -160,13 +169,28 @@ def utc_now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def derive_status(tool_response):
-    if not isinstance(tool_response, dict):
-        return "unknown"
-    if tool_response.get("success") is True:
-        return "success"
-    if tool_response.get("success") is False or tool_response.get("error") is not None:
+def derive_status(event):
+    """Outcome of the tool call: "success", "error" or "unknown".
+
+    The two harnesses report the outcome differently:
+
+    - Devin puts it inside tool_response ("success": true/false, or "error").
+    - Claude Code does not. A successful call arrives as PostToolUse with a
+      tool_response that carries no outcome field at all, and a failed call
+      arrives as a separate PostToolUseFailure event carrying an "error"
+      string and no tool_response. "tool_use_id" is present only in Claude Code
+      payloads, and is used here as the marker for that harness.
+    """
+    tool_response = event.get("tool_response")
+    if isinstance(tool_response, dict):
+        if tool_response.get("success") is True:
+            return "success"
+        if tool_response.get("success") is False or tool_response.get("error") is not None:
+            return "error"
+    if event.get("error") is not None:
         return "error"
+    if event.get("hook_event_name") == "PostToolUse" and "tool_use_id" in event:
+        return "success"
     return "unknown"
 
 
@@ -241,7 +265,7 @@ def build_record(event, account):
     record.update({
         "type": "tool_call",
         "tool_name": event.get("tool_name"),
-        "status": derive_status(event.get("tool_response")),
+        "status": derive_status(event),
         "input_keys": sorted(tool_input.keys()) if isinstance(tool_input, dict) else [],
     })
     return record
@@ -260,7 +284,7 @@ def skill_info(event):
 
 def build_skill_record(event, info, account):
     record = base_fields(event, account)
-    record.update({"type": "skill_invoke", "status": derive_status(event.get("tool_response"))})
+    record.update({"type": "skill_invoke", "status": derive_status(event)})
     record.update(info)
     return record
 

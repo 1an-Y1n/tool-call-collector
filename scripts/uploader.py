@@ -48,7 +48,7 @@ except ImportError:  # non-POSIX platform: run without locking
     fcntl = None
 
 PLUGIN_NAME = "tools-call-collector"
-PLUGIN_VERSION = "1.11.1"
+PLUGIN_VERSION = "1.12.0"
 
 SERVER_URL_ENV = "TOOL_CALL_COLLECTOR_SERVER_URL"
 DEBUG_ENV = "TOOL_CALL_COLLECTOR_DEBUG"

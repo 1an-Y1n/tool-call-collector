@@ -285,8 +285,8 @@ etc.), `status`.
 Examples:
 
 ```json
-{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:59:35.309678Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"c8222e07-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"edit","status":"success","input_keys":["file_path","new_string","old_string"],"collector":{"name":"tools-call-collector","version":"1.11.1"}}
-{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T08:08:07.585190Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"8aa1ce27-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"devin-cli","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.11.1"}}
+{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:59:35.309678Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"c8222e07-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"edit","status":"success","input_keys":["file_path","new_string","old_string"],"collector":{"name":"tools-call-collector","version":"1.12.0"}}
+{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T08:08:07.585190Z","client_id":"2d1dcb0d-…","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"superb-quality","prompt_id":"8aa1ce27-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"devin-cli","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.12.0"}}
 ```
 
 ### 3.3 Why JSONL (upload-oriented design)

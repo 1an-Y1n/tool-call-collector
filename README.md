@@ -34,8 +34,13 @@ agent calls a tool ──► PostToolUse hook ──► scripts/collector.py ─
 
 ```text
 tools-call-collector/
-├── plugin.json                      # Agent Plugins 1.0.0 manifest
-├── hooks.json                       # lifecycle hook registration (client extension, see "Spec conformance")
+├── plugin.json                      # Agent Plugins 1.0.0 manifest (Devin CLI)
+├── hooks.json                       # lifecycle hook registration for the Devin CLI (client extension, see "Spec conformance")
+├── .claude-plugin/
+│   ├── marketplace.json             # Claude Code marketplace manifest
+│   └── plugin.json                  # Claude Code plugin manifest
+├── hooks/
+│   └── hooks.json                   # Claude Code lifecycle hook registration
 ├── config.default.json              # factory-default category config (shipped with the plugin)
 ├── scripts/
 │   ├── collector.py                 # PostToolUse collector (stdlib only)
@@ -45,6 +50,11 @@ tools-call-collector/
 ├── LICENSE
 └── README.md
 ```
+
+The plugin carries two sets of manifests because the two harnesses disagree on
+where they belong: the Devin CLI reads `plugin.json` and `hooks.json` from the
+plugin root, while Claude Code reads `.claude-plugin/plugin.json` and
+`hooks/hooks.json`. The collector itself is shared and works in both.
 
 ## Requirements
 
@@ -82,6 +92,29 @@ Windows) or `not logged in to Devin`. Full text and both output channels:
 [Devin identity](#devin-identity-name--email).
 
 ## Installation
+
+### Claude Code
+
+The Claude Code layout lives on the `claudecode` branch of this repository.
+
+```bash
+# 1. Register the repository as a marketplace, then install the plugin from it
+claude plugin marketplace add git@github.com:1an-Y1n/tool-call-collector.git
+claude plugin install tool-call-collector@tool-call-collector
+
+# 2. Verify the plugin is registered
+claude plugin list
+
+# 3. Verify attribution, after one tool call in a session: the cached identity
+#    must carry an email, otherwise no event can be attributed to a person
+cat ~/.devin/tools-call-collector/state/devin_identity.json
+```
+
+Claude Code reports a failed tool call through a separate `PostToolUseFailure`
+event rather than through `PostToolUse`, so `hooks/hooks.json` registers both;
+otherwise failed calls would never be counted.
+
+### Devin CLI
 
 ```bash
 # 0. Prerequisites — see Requirements above
@@ -204,12 +237,12 @@ One self-contained JSON object per line (NDJSON), with fields:
 | `tool_name`      | string         | Tool name, e.g. `exec`, `edit`, `mcp__github__create_issue`                                                           |
 | `status`         | string         | `success` / `error` / `unknown`                                                                                       |
 | `input_keys`     | string[]       | Field names of `tool_input` (key names only, never values)                                                                |
-| `collector`      | object         | `{ "name": "tools-call-collector", "version": "1.11.1" }`                                                                 |
+| `collector`      | object         | `{ "name": "tools-call-collector", "version": "1.12.0" }`                                                                 |
 
 Example (one line):
 
 ```json
-{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"exec","status":"success","input_keys":["command","timeout"],"collector":{"name":"tools-call-collector","version":"1.11.1"}}
+{"schema_version":4,"type":"tool_call","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","tool_name":"exec","status":"success","input_keys":["command","timeout"],"collector":{"name":"tools-call-collector","version":"1.12.0"}}
 ```
 
 ### Devin identity (`name` / `email`)
@@ -315,7 +348,7 @@ invocation with no identifiable name shows up as `<unidentified>`.
 Example (one line):
 
 ```json
-{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"tools-call-collector:tool-call-stats","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.11.1"}}
+{"schema_version":4,"type":"skill_invoke","timestamp":"2026-10-14T07:31:22.123456Z","client_id":"2d1dcb0d-6bcf-494a-9a8e-e02faaa4b8f7","user":"ian_yin","name":"Ian Yin","email":"ian_yin@example.com","session_id":"3f8d1c2a-…","prompt_id":"b71e9d40-…","project_dir":"/home/ian_yin/devin-tools","host":"devbox","skill":"tools-call-collector:tool-call-stats","skill_command":"invoke","collector":{"name":"tools-call-collector","version":"1.12.0"}}
 ```
 
 ### Why JSONL (upload-oriented design)
